@@ -1,0 +1,32 @@
+\begin{thebibliography}{1}
+
+\bibitem{burckhardt2010line}
+Sebastian Burckhardt, Chris Dern, Madanlal Musuvathi, and Roy Tan.
+\newblock Line-up: a complete and automatic linearizability checker.
+\newblock In {\em ACM Sigplan Notices}, volume~45, pages 330--340. ACM, 2010.
+
+\bibitem{Banerjee06unravelingdata}
+Utpal Banerjee, Brian Bliss, Zhiqiang Ma, and Paul Petersen.
+\newblock Unraveling data race detection in the intel thread checker.
+\newblock In {\em In Proceedings of STMCS ’06}, 2006.
+
+\bibitem{muzahid2010atomtracker}
+Abdullah Muzahid, Norimasa Otsuki, and Josep Torrellas.
+\newblock Atomtracker: A comprehensive approach to atomic region inference and
+  violation detection.
+\newblock In {\em Proceedings of the 2010 43rd Annual IEEE/ACM International
+  Symposium on Microarchitecture}, pages 287--297. IEEE Computer Society, 2010.
+
+\bibitem{park2010falcon}
+Sangmin Park, Richard~W Vuduc, and Mary~Jean Harrold.
+\newblock Falcon: fault localization in concurrent programs.
+\newblock In {\em Proceedings of the 32nd ACM/IEEE International Conference on
+  Software Engineering-Volume 1}, pages 245--254. ACM, 2010.
+
+\bibitem{smaragdakis2012sound}
+Yannis Smaragdakis, Jacob Evans, Caitlin Sadowski, Jaeheon Yi, and Cormac
+  Flanagan.
+\newblock Sound predictive race detection in polynomial time.
+\newblock In {\em ACM SIGPLAN Notices}, volume~47, pages 387--400. ACM, 2012.
+
+\end{thebibliography}
