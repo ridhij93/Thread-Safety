@@ -1,0 +1,5 @@
+A piece of code is thread-safe if it manipulates shared data structures only in a manner that guarantees safe execution by multiple threads at the same time.
+
+A thread-safe function can be called simultaneously from multiple threads, even when the invocations use shared data, because all references to the shared data are serialized.
+
+A reentrant function can also be called simultaneously from multiple threads, but only if each invocation uses its own data.
