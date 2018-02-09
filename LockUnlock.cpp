@@ -13,7 +13,7 @@
 #include <string> 
 #include <deque>
 #include <semaphore.h>
-#define window_size 3
+#define window_size 30
 //PINPLAY_ENGINE pinplay_engine;
 //KNOB<BOOL> KnobPinPlayLogger(KNOB_MODE_WRITEONCE,
   //                    "pintool", "log", "0",
@@ -25,9 +25,22 @@
 
 // Contains knobs to filter out things to instrument
 FILTER filter;
+string ins_l;
+string ins_s;
+struct relax_element
+{
+    THREADID tid;
+    char type;
+    string ins;
+    int i_count;
+    ADDRINT addr;
+    VectorClock* vc;    
+};
+vector<pair<THREADID,vector<relax_element>>> relax_struct;
 ofstream runfrom;
 int window=0;
 bool all=false;
+ofstream endrun;
 bool wait_t1=false;
 bool post_t2=false;
 bool last_waiting=false;
@@ -60,9 +73,7 @@ std::mutex mtx;
 string bt_string="";
 set<ADDRINT> writeIntersection;
 string event;
-
 map<THREADID, THREADID> mapOfThreadIDs;
-
 ofstream sharedAccesses;
 ofstream races;
 ofstream bt;
@@ -79,12 +90,12 @@ deque<sema> semaphores;
 vector<deque<int>> order;
 
 struct state
-{
-int tid;
-int count;
-bool invert=false;
-bool done=false;
-};
+ {
+    int tid;
+    int count;
+    bool invert=false;
+    bool done=false;
+ };
 state curr_state,next_state;
 deque<state> stack;
 bool executed=false;
@@ -154,6 +165,11 @@ void updateMemoryClocks(ThreadLocalData* tld, Lock* lock){
 
 VOID ThreadStart(THREADID threadid, CONTEXT *ctxt, INT32 flags, VOID *v){
 	cout << "Thread Start:" << threadid << endl;
+
+    vector<relax_element> re;
+    relax_element e;
+    re.push_back(e);
+    relax_struct.push_back(make_pair(threadid,re));
     ThreadLocalData* tld = new ThreadLocalData(threadid);
 
     if(threadid == 0){
@@ -244,6 +260,8 @@ VOID ThreadStart(THREADID threadid, CONTEXT *ctxt, INT32 flags, VOID *v){
 
 VOID ThreadFini(THREADID threadid, const CONTEXT *ctxt, INT32 code, VOID *v){
     all=true;
+
+    
     ThreadLocalData* tld = getTLS(threadid);
 	tld->out.close();
     if(threadid!=0){
@@ -260,28 +278,28 @@ VOID ThreadFini(THREADID threadid, const CONTEXT *ctxt, INT32 code, VOID *v){
         parentTls->currentVectorClock->receiveAction(tld->currentVectorClock);
         parentTls->currentVectorClock->event();
     }
-    cout << "Thread Finished:" << threadid << endl;
-    if(!first_run)
+   cout << "Thread Finished:" << threadid << endl;
+ if(!first_run)
     {
-     thread_fini[threadid]=true; 
-       {
-	for(int i=1;i<thread_count;i++)
-	{
-	 if(!thread_fini[i])
- 	  { 
-	    all=false;
-	    break; 
-		}
-	 }
-    if (all)
-	{
-	 sem_post(&wait_last);
-	 }   
-	} 
+       thread_fini[threadid]=true; 
+          {
+	   for(int i=1;i<thread_count;i++)
+	      {
+	       if(!thread_fini[i])
+ 	          { 
+	           all=false;
+	           break; 
+		   }
+	       }
+           if (all)
+	      {
+	       sem_post(&wait_last);
+	      }   
+	  } 
     } 
-
     free(tld);
     PIN_SetThreadData(tls_key, 0, threadid);
+   
 }
 
 VOID CheckCMPXCHG(THREADID threadid, INS ins){
@@ -553,24 +571,10 @@ VOID incrementThreadINS(THREADID tid, INS ins){
 //cout <<tld->insCount<<" ********************************************************* "<<last0<<endl;
     last_ins++;
     }
-    if((!first_run)&&(tid==0)&&(tld->insCount>=last0-1))
-    {
-    cout<<"put to wait"<<tid <<" "<<tld->insCount<<" "<<tid<<endl;
-      for(int i=1;i<thread_count;i++)
-       { 
-        if(!thread_fini[i])
-         {
-         last_waiting = true;
-         sem_wait(&wait_last);
-         }
    
-
-
-    }
-     }
-cout << first_run << finished <<stack_end <<wait_t1<<post_t2<<endl;
+//cout << first_run << finished <<stack_end <<wait_t1<<post_t2<<endl;
     if((!first_run)&&(!finished)&&(!stack_end)){   
-     cout<<tid <<" "<<tld->insCount<<" "<<curr_state.tid<<" "<<curr_state.count<<" "<<next_state.tid<<" "<<next_state.count<< " "<< order[tid].front()<<endl;  
+   //  cout<<tid <<" "<<tld->insCount<<" "<<curr_state.tid<<" "<<curr_state.count<<" "<<next_state.tid<<" "<<next_state.count<< " "<< order[tid].front()<<endl;  
    if((tid==tid1)&&(tld->insCount==count1))
    { 
     cout<< "############################################ wait* "<< tid1<<" " <<count1<<endl;
@@ -587,38 +591,40 @@ cout << first_run << finished <<stack_end <<wait_t1<<post_t2<<endl;
     for(int y=0;y<thread_count;y++)
         {
         while(semaphores[y].wait>0)
-	{semaphores[y].wait--;
-        sem_post(&semaphores[y].s);
-	}}
-      cout <<"Putting to wait"<<endl;
-       sem_wait(&rev);
-usleep(1);
+	    {
+	     semaphores[y].wait--;
+             sem_post(&semaphores[y].s);
+	    }
+        }
+    cout <<"Putting to wait"<<endl;
+    sem_wait(&rev);
+    usleep(1);
     }
 
    if((tid==tid2)&&(tld->insCount==count2))
    {
     reverse_point=true;
     post_t2=true;
-cout<< "############################################ wait "<< tid2<<" " <<count2<<endl;
-       for(int y=0;y<thread_count;y++)
+    cout<< "############################################ wait "<< tid2<<" " <<count2<<endl;
+    for(int y=0;y<thread_count;y++)
         {
         while(semaphores[y].wait>0)
-	{semaphores[y].wait--;
-        sem_post(&semaphores[y].s);
-	}}
-      cout <<"Putting to post"<<endl;
+	    {
+	    semaphores[y].wait--;
+            sem_post(&semaphores[y].s);
+	    }
+        }
+    cout <<"Putting to post"<<endl;
     sem_post(&rev);
     }
 
 
   if((!reverse_point)&&(!stack_end))
   {
-     
-    
      if((curr_state.tid==next_state.tid)) 
       {
         while((curr_state.tid==next_state.tid))
-	{
+	 {
           if(stack.size()>=1)
             {
 	  cout << "same threads: changing to next" <<endl;
@@ -742,6 +748,7 @@ if(!first_run){
 
 
 VOID MemoryReadInst(THREADID threadid, ADDRINT effective_address, int i ){
+    relax_element read_element;
     list<MemoryAddr*>::const_iterator lookup = 
                 find_if(memSet.begin(), memSet.end(), mem_has_addr(effective_address));
     if(lookup!=memSet.end()){
@@ -757,14 +764,27 @@ VOID MemoryReadInst(THREADID threadid, ADDRINT effective_address, int i ){
         (*lookup)->accessingThread.push_back(threadid);
         (*lookup)->accessingInstructions.push_back(tld->insCount);
         (*lookup)->accessClocks.push_back(*(tld->currentVectorClock));
-	event = std::to_string(threadid)+"_"+std::to_string(tld->insCount)+"_"+"r_{"+std::to_string(threadid)+"}_{"+std::to_string(threadid)+"}_{}";
+	event = std::to_string(threadid)+"_"+std::to_string(tld->insCount)+"_"+"r_{"+std::to_string(threadid)+"}_{"+std::to_string(threadid)+"}_[]_{}";
 	//bt_string=bt_string+event+" ";	
-	execution.push_back(event);        
+	execution.push_back(event); 
+	read_element.tid = threadid;
+	read_element.vc = tld->currentVectorClock;
+	read_element.ins = ins_l;
+	read_element.addr = effective_address;
+	read_element.i_count = tld->insCount;
+	read_element.type = 'r'; 
+        for(std::vector<pair<THREADID,vector<relax_element>>>::iterator it = relax_struct.begin(); it != relax_struct.end(); ++it) {
+   	    if(it->first==threadid)
+		{
+		it->second.push_back(read_element);
+		}
+           }
         PIN_ReleaseLock(&((*lookup)->MemoryLock));
      }
 }
 
 VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i){
+    relax_element write_element;
     list<MemoryAddr*>::const_iterator lookup = 
                 find_if(memSet.begin(), memSet.end(), mem_has_addr(effective_address));
     if(lookup!=memSet.end()){
@@ -780,9 +800,21 @@ VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i){
         (*lookup)->accessingThread.push_back(threadid);
         (*lookup)->accessingInstructions.push_back(tld->insCount);
         (*lookup)->accessClocks.push_back(*(tld->currentVectorClock));
-	event = std::to_string(threadid)+"_"+std::to_string(tld->insCount)+"_"+"w_{"+std::to_string(threadid)+"}_{"+std::to_string(threadid)+"}_{}";
+	event = std::to_string(threadid)+"_"+std::to_string(tld->insCount)+"_"+"w_{"+std::to_string(threadid)+"}_{"+std::to_string(threadid)+"}_[]_{}";
 	//bt_string=bt_string+event+" ";
 	execution.push_back(event); 
+	write_element.tid = threadid;
+	write_element.vc = tld->currentVectorClock;
+	write_element.ins = ins_s;
+	write_element.addr = effective_address;
+	write_element.i_count = tld->insCount;
+	write_element.type = 'w'; 
+        for(std::vector<pair<THREADID,vector<relax_element>>>::iterator it = relax_struct.begin(); it != relax_struct.end(); ++it) {
+   	    if(it->first==threadid)
+		{
+		it->second.push_back(write_element);
+		}
+           }
         PIN_ReleaseLock(&((*lookup)->MemoryLock));
      }
 }
@@ -799,6 +831,7 @@ void rec_mem(INS ins){
     UINT32 i;
     for (i = 0; i < num_operands; ++i){
         if(INS_MemoryOperandIsRead(ins, i)){
+            ins_l= INS_Disassemble(ins);
             INS_InsertCall(ins, 
                            IPOINT_BEFORE,
                            (AFUNPTR) MemoryReadInst, 
@@ -810,6 +843,7 @@ void rec_mem(INS ins){
         }
 
         if(INS_MemoryOperandIsWritten(ins, i)){
+	    ins_s= INS_Disassemble(ins);
             INS_InsertCall(ins, 
                            IPOINT_BEFORE,
                            (AFUNPTR) MemoryWriteInst, 
@@ -850,6 +884,7 @@ VOID Trace(TRACE trace, VOID *val)
 
 VOID Fini(INT32 code, void *v){
     string temp=""; 
+
     list<MemoryAddr *>::const_iterator i;
     for(i=memSet.begin(); i!=memSet.end(); i++){
         cout << "**********************************" << endl;
@@ -870,6 +905,7 @@ VOID Fini(INT32 code, void *v){
             cout <<endl;
         }
     }
+
     for(i=memSet.begin(); i!=memSet.end(); i++){
         int size = (*i)->accesses.size();
         int k;
@@ -888,75 +924,116 @@ VOID Fini(INT32 code, void *v){
                                  " " << (*i)->accesses[k] << " " /*<< (*i)->operand_index[k] << " " */<< (*i)->accessingThread[j] << 
                                  " " << (*i)->accessingInstructions[j] <<
                                  " " << (*i)->accesses[j] << /*" " << (*i)->operand_index[j] <<*/ endl;
-  s=std::to_string((*i)->accessingThread[k])+"_"+  std::to_string((*i)->accessingInstructions[k])+"_"+ (*i)->accesses[k];                 
-  for ( int l = 0; l <execution.size(); l++ ) {
-      std::size_t index = execution[l].find(s); /*if you find a race, search fot instruction in execution*/
-      if ((index!=std::string::npos)&&(index<execution[l].find_first_of('{')))
-       { temp=execution[l];
-      if((l<=split)||(first_run))
-	{
-         if((temp.at(temp.length()-2)=='{')&&(temp.at(temp.length()-1)=='}'))
-           {
-	    temp=temp.substr(0,temp.length()-1);
-            temp=temp+std::to_string((*i)->accessingThread[j])+"_"+  std::to_string((*i)->accessingInstructions[j])+"_"+ (*i)->accesses[j]+"}";
-           }
-	    else
-		{
-           temp=temp.substr(0,temp.length()-1);
-	   temp=temp+","+std::to_string((*i)->accessingThread[j])+"_"+  std::to_string((*i)->accessingInstructions[j])+"_"+ (*i)->accesses[j]+"}";
- 	   }  }  
-           execution[l]=temp;
-      }
-      // std::cout << execution[i] << std::endl;
-    }
-                    }
+                        s=std::to_string((*i)->accessingThread[k])+"_"+  std::to_string((*i)->accessingInstructions[k])+"_"+ (*i)->accesses[k];                 
+                        for ( int l = 0; l <execution.size(); l++ ) 
+			    {
+    			     std::size_t index = execution[l].find(s); /*if you find a race, search fot instruction in execution*/
+      			     if ((index!=std::string::npos)&&(index<execution[l].find_first_of('{')))
+   			        { 
+				temp=execution[l];
+    			        if((l<=split)||(first_run))
+				    {
+        			     if((temp.at(temp.length()-2)=='{')&&(temp.at(temp.length()-1)=='}'))
+         			        {
+	  				temp=temp.substr(0,temp.length()-1);
+            				temp=temp+std::to_string((*i)->accessingThread[j])+"_"+  std::to_string((*i)->accessingInstructions[j])+"_"+ (*i)->accesses[j]+"}";
+          				}
+	  			     else
+					{
+           				temp=temp.substr(0,temp.length()-1);
+	 				temp=temp+","+std::to_string((*i)->accessingThread[j])+"_"+  std::to_string((*i)->accessingInstructions[j])+"_"+ (*i)->accesses[j]+"}";
+ 	   				} 
+				    }  
+          			execution[l]=temp;
+    			        }
+       			    }
+                       }
                 }
             }
         }
     }
-  for(int i=0;i<execution.size();i++)
-  {
-    bt_string=bt_string+execution[i]+" ";
-  }
-if(first_run)
-{
-      string st="LAST="+std::to_string(last_ins)+"1";
-      char set[100];
-      strcpy(set, st.c_str());
-      //setenv("LAST", st.c_str(), true);
-      putenv(set);
-      cout <<"reaching "<< getenv("LAST")<< endl;
-      system("export LAST=1");
-     // unsetenv("LAST");
-             //     if(putenv(set)!=0)
-                      //fprintf(stderr,"putenv failed\n");
 
-}
-/*if there was only one race to be relayed at race point move up else play the remaining races*/
-if(!first_run)
-{
-  if(!only_race)
-  {
-        runfrom.open("runfrom.out");
-        runfrom << "detail" <<endl;
-        runfrom.close();
-    for(int t=1;t<prev_exec.size();t++)
-    {
-      if(t!=race_point)
-        detail_s=detail_s+prev_exec[t]+" ";
-      if(t == race_point)
+    for(int i=0;i< totalThreads;i++)
+	{
+	for(int k=relax_struct[i].second.size()-1;k>=0;k--)
+	    {
+	    for(int l=k-1;l>=0;l--)
+		{
+		if((relax_struct[i].second[l].type=='w')&&((k-l) <= window_size)&&(relax_struct[i].second[l].addr!=relax_struct[i].second[k].addr)&&(relax_struct[i].second[l].tid==relax_struct[i].second[k].tid))
+		    {
+	            string local,sub1,sub2; 
+                    string prev_ins=std::to_string(relax_struct[i].second[l].tid)+"_"+std::to_string(relax_struct[i].second[l].i_count);
+		    string next_ins=std::to_string(relax_struct[i].second[k].tid)+"_"+std::to_string(relax_struct[i].second[k].i_count)+ "_"+ relax_struct[i].second[k].ins;
+		        for(int m=0;m<execution.size();m++)
+       			   {
+        		   std::size_t index = execution[m].find(prev_ins); /*if you find a race, search fot instruction in execution*/
+      			   if ((index!=std::string::npos)&&(index<execution[l].find_first_of('{')))
+				{
+				local=execution[m];
+		 	        std::size_t last_sq=local.find_last_of(']');
+				if(next_ins.find("mov")!=std::string::npos)
+			            {
+				    if((local.at(last_sq-1)=='['))
+				        {
+	  			        sub1=local.substr(0,last_sq);
+				        sub2=local.substr(last_sq);
+				        local=sub1+next_ins+sub2;
+				        }
+				    else
+				        {
+				        sub1=local.substr(0,last_sq);
+				        sub2=local.substr(last_sq);
+				        local=sub1+"."+next_ins+sub2;
+				        } 
+				    execution[m]=local;
+				    }
+      			        }
+		            }
+		        }
+	            }
+	        }
+       	    }
+
+/*Relax memory reordering detection goes here*/
+
+    for(int i=0;i<execution.size();i++)
         {
-	string tmp1=prev_exec[t];
-	std::size_t last_c=tmp1.find_last_of(',');
-        tmp1=tmp1.substr(0,last_c);
-	tmp1=tmp1+"}";
-        detail_s=detail_s+tmp1+" ";
-         }
-      char set_det[80]="RUN_INFO=detail";
-      putenv(set_det);
+        bt_string=bt_string+execution[i]+" ";
+        }
+    if(first_run)
+	{
+        string st="LAST="+std::to_string(last_ins)+"1";
+        char set[100];
+        strcpy(set, st.c_str());
+        putenv(set);
+        cout <<"reaching "<< getenv("LAST")<< endl;
+        //system("export LAST=1");
+        }
+/*if there was only one race to be relayed at race point move up else play the remaining races*/
+    if(!first_run)
+     {
+      if(!only_race)
+         {
+         runfrom.open("runfrom.out");
+         runfrom << "detail" <<endl;
+         runfrom.close();
+         for(int t=1;t<prev_exec.size();t++)
+  	    {
+     	    if(t!=race_point)
+            detail_s=detail_s+prev_exec[t]+" ";
+            if(t == race_point)
+        	{
+		string tmp1=prev_exec[t];
+		std::size_t last_c=tmp1.find_last_of(',');
+        	tmp1=tmp1.substr(0,last_c);
+		tmp1=tmp1+"}";
+        	detail_s=detail_s+tmp1+" ";
+         	}
+            char set_det[80]="RUN_INFO=detail";
+            putenv(set_det);
 	    /*store the same execution trace without the replayed race*/
-	  }
-}
+	    }
+	 }
     if (only_race)
        { 
         runfrom.open("runfrom.out");
@@ -966,10 +1043,10 @@ if(!first_run)
         char set_var[80]="RUN_INFO=backtrack";
         putenv(set_var);
     //system("echo $RUN_INFO");
-      }
+       }
     details.open("details.out");
     details << totalThreads <<" "<< detail_s <<endl;
-}
+   }
   bt.open("backtrack.out");
   cout << "total ins : " << totalins <<endl;
   bt_string=std::to_string(totalThreads)+" "+bt_string;
@@ -1041,55 +1118,51 @@ int main(int argc, char * argv[])
         istringstream iss(sLine);
         do
        {
-        string subs;
-        iss >> subs;
-        if(subs!="")
-       { 
-	prev_exec.push_back(subs);
-	std::size_t f=subs.find_first_of('{');	
-        string x=subs.substr(0,f);
-        std::size_t u=x.find_first_of('_');
-        st.tid=std::stoi(x.substr(0,u));
-	x=x.substr(u+1);
-	u=x.find_first_of('_');
-	st.count=std::stoi(x.substr(0,u));
-	cout << st.tid <<" " <<st.count<<endl;
-        if(p==0)/*for the first run the order is initialized to 0*/
-	{
-         for(int r=0;r<st.tid;r++)
-	  {
-	order.push_back(dq);
-		}
-	}
-	if(p>0){/*for other runs, store into order*/
-	        
-	   order[st.tid].push_back(st.count);
-	  }
-	stack.push_back(st);
-	p++;
-        }
-                 } while (iss);
-   
-       }
+            string subs;
+            iss >> subs;
+            if(subs!="")
+                { 
+		prev_exec.push_back(subs);
+		std::size_t f=subs.find_first_of('{');	
+        	string x=subs.substr(0,f);
+        	std::size_t u=x.find_first_of('_');
+        	st.tid=std::stoi(x.substr(0,u));
+		x=x.substr(u+1);
+		u=x.find_first_of('_');
+		st.count=std::stoi(x.substr(0,u));
+		cout << st.tid <<" " <<st.count<<endl;
+        	if(p==0)/*for the first run the order is initialized to 0*/
+		    {
+         	    for(int r=0;r<st.tid;r++)
+	  		{
+			order.push_back(dq);
+			}
+		    }
+		if(p>0)
+		    {/*for other runs, store into order*/
+	            order[st.tid].push_back(st.count);
+	 	    }
+		stack.push_back(st);
+		p++;
+            }
+       } while (iss);
+   }
    /*   else{
 	 cout<<"Error: File has no more lines to read."<<endl;
 	 exit (EXIT_FAILURE);
 	 }*/
-     }
+ }
     else
     {
     first_run=true;
      }
-
     if(!first_run)
      {
      cout <<"before"<<endl;
-     const char* env_1 = std::getenv("LAST");
-     last0 = atoi (env_1);
+     
      int i;
      for(i=prev_exec.size()-1;i>0;i--)
        {
-
       if(!((prev_exec[i].at(prev_exec[i].length()-1)=='}')&&(prev_exec[i].at(prev_exec[i].length()-2)=='{')))
 	{   /*find the reversible races from the bootom most state*/
         race_point=i;/*set up the index of bottom most race*/
@@ -1130,14 +1203,23 @@ int main(int argc, char * argv[])
         bool done=false;
 	break;
 	}
-      if(i==0)
-	finished=true;
-      else
-	finished=false;
       }
-
+      if(i<=0)
+	{
+	finished=true;
+        endrun.open("endrun.out");
+        endrun<<"true"<<endl;
+        endrun.close();
+        }
+      else
+	{
+	finished=false;
+        endrun.open("endrun.out");
+        endrun<<"false"<<endl;
+        endrun.close();
 	}
-          thread_count = stack.front().tid;
+     }
+   thread_count = stack.front().tid;
    for(int ii=0;ii<thread_count;ii++)
      {
       thread_fini.push_back(false);
