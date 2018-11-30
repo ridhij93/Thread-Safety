@@ -13,7 +13,7 @@
 #include <deque>
 #include <semaphore.h>
 #include <ctime>
-#define window_size 1
+#define window_size 4
 //PINPLAY_ENGINE pinplay_engine;
 //KNOB<BOOL> KnobPinPlayLogger(KNOB_MODE_WRITEONCE,
 //                    "pintool", "log", "0",
@@ -27,9 +27,16 @@
 FILTER filter;
 ofstream instructions;
 int start_s, stop_s;
+bool set_extra = false;
+bool hash_added = false;
+string state_2, state_1;
+bool set_swap = false;
+int tid1_x,tid2_x, count1_x, count2_x;
 CONTEXT *ctxtx = new CONTEXT;
 state break_point;
 bool done = false;
+int stack_size, enabled_size; 
+bool second_done = false;
 bool wait_at_break[2] = {false, false};
 bool reached_breakpoint = false;
 int total = 0;
@@ -43,6 +50,7 @@ bool next_execute = false;
 string ins_s;
 int next_tid, next_count;
 deque<relax_info> relax_ds;
+deque<relax_info> relax_ds_temp;
 vector<pair<THREADID, vector<relax_element>>> relax_struct;
 bool all = false;
 ofstream endrun;
@@ -87,11 +95,12 @@ struct sema
 
 //deque<sema> semaphores;
 sema semaphores[100];
-vector<deque<int>> order;
+vector<deque<stack_element>> order;
 
 
 state curr_state, next_state;
 deque<state> stack;
+deque<state> deleted_state;
 bool executed = false;
 bool waited = false;
 template <class T>
@@ -120,7 +129,6 @@ inline void PRINT_ELEMENTS_OUTPUT (const T& coll, const char* optcstr = "")
 
 void updateMemoryClocks(ThreadLocalData* tld, Lock* lock) {
     set<ADDRINT>::const_iterator pos;
-
     for (pos = lock->memReadAccesses.begin(); pos != lock->memReadAccesses.end(); ++pos) {
         list<MemoryAddr*>::const_iterator lookup =
             find_if(memSet.begin(), memSet.end(), mem_has_addr(*pos));
@@ -137,7 +145,6 @@ void updateMemoryClocks(ThreadLocalData* tld, Lock* lock) {
         }
 
     }
-
     for (pos = lock->memWriteAccesses.begin(); pos != lock->memWriteAccesses.end(); ++pos) {
         list<MemoryAddr*>::const_iterator lookup =
             find_if(memSet.begin(), memSet.end(), mem_has_addr(*pos));
@@ -154,7 +161,6 @@ void updateMemoryClocks(ThreadLocalData* tld, Lock* lock) {
         }
 
     }
-
 }
 
 VOID ThreadStart(THREADID threadid, CONTEXT *ctxt, INT32 flags, VOID *v) {
@@ -389,7 +395,6 @@ VOID RecordMemoryWriteAfterINS(THREADID threadid, INS ins) {
 
     int zeroOneLock = tld->isEAXZero && tld->isZeroBefore && tld->isOneAfterAndUnlocked;
     int zeroTwoLock = tld->isEAXTwo && tld->isZeroBefore && tld->isTwoAfter;
-
     if (zeroOneLock || zeroTwoLock) {
         PIN_GetLock(&GlobalLock, tld->threadId);
         tld->out << "Lock Detected" << endl;
@@ -415,7 +420,6 @@ VOID RecordMemoryWriteAfterINS(THREADID threadid, INS ins) {
         }
         PIN_ReleaseLock(&GlobalLock);
     }
-
     int zeroOneUnlock = tld->isOneBeforeAndLocked && tld->isZeroAfter;
     int twoOneUnlock = tld->isTwoBefore && tld->isOneAfterAndLocked;
     int twoZeroUnlock = tld->isTwoBefore && tld->isZeroAfter;
@@ -538,7 +542,11 @@ void check_lock(INS ins)
 VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, int size) {
     ThreadLocalData *tld = getTLS(tid);
     tld->insCount++;
-    cout  << "PIN: " << tid << " " << tld->insCount << " " << stack_end << endl;
+	/*for (int j = 0; j < totalThreads; j++) {
+                cout << (tld)->currentVectorClock->vclock_arr[j] << " ";
+            }
+	cout <<endl;*/
+    //cout  << "PIN: " << tid << " " << tld->insCount << " " << stack_end << endl;
     if (!first_run && !race ) {
         for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
         {
@@ -555,6 +563,7 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
             }
         }
     }
+
     /*Release locks on all threads if executed successfull till last inversion*/
     if (!first_run)
     {
@@ -573,24 +582,36 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                 }
             }
         }
+
         /* close if(!first_run)*/
-        if ((stack_end) && (!done) && (tid != tid2) && (tld->insCount >= order[tid].front()) && (!race))
+        if (((stack_end) && (!done) && (tid != tid2) && (tld->insCount >= order[tid].front().count) && (!race)) || ((!done) && (tid != tid2) && (tld->insCount >= order[tid].front().count2) && (!race) && (order[tid].front().enabled)))
         {
+	    bool cont = false;
             cout << "PIN: Other Wait " << tid << endl;
-            if (semaphores[tid].wait < 1)
+            for (std::deque<relax_info>::iterator it = relax_ds.begin(); it != relax_ds.end(); ++it)
+		{
+		    cout << "IDS "<< it->tid1 << " " << it->count1 << it->count2 << endl;
+		    if(((tid == it->tid1) && (tld->insCount == it->count1)) || ((tid == it->tid2) && (tld->insCount == it->count2) && (it->executed1)))
+		    {
+			cout <<"CONT " <<tid <<endl;
+			cont = true;
+		        break;
+		    }
+		}
+            if ((semaphores[tid].wait < 1) && (!cont))
             {
+		cout <<"WAIT CONT " <<tid <<endl;
                 semaphores[tid].wait++;
                 sem_wait(&semaphores[tid].s);
             }
         }
 
-	/**/
         if (stack_end)
         {
             bool dependent = false;
-            if ((race) && (tid != tid2) && (!done) && ((tld->insCount >= order[tid].front()) || ((tld->insCount == count1) && (tid == tid1))))
+            if ((race) && (tid != tid2) && (!done) && ((tld->insCount >= order[tid].front().count) || ((tld->insCount == count1) && (tid == tid1))))
             {
-                cout << "PIN: WAIT " << tid << tld->insCount << " " << order[tid].front() << endl;
+                cout << "PIN: WAIT " << tid << tld->insCount << " " << order[tid].front().count << endl;
                 for (int i = 0; i < stack.size(); i++) {
                     if ((stack[i].tid == tid) && (stack[i].tid != tid1) && (stack[i].count == tld->insCount))
                     {
@@ -602,6 +623,11 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                 }
                 if (!dependent)
                 {
+                    if (semaphores[tid2].wait > 0)
+                    {
+                        semaphores[tid2].wait--;
+                        sem_post(&semaphores[tid2].s);
+                    }
                     if (semaphores[tid].wait < 1)
                     {
                         semaphores[tid].wait++;
@@ -609,12 +635,24 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                     }
                 }
             }
-            if ((race) && (tid == tid2) && (tld->insCount > count2) && (!done))
+            if ((race) && (tid == tid2) && (tld->insCount == count2) && (!done))
+	    {
+
+		if (!reached_breakpoint)
+		{
+                    if (semaphores[tid2].wait < 1)
+                    {
+                        semaphores[tid2].wait++;
+                        sem_wait(&semaphores[tid2].s);
+                    }
+		}     
+	    }
+            if ((race) && (tid == tid2) && (tld->insCount > count2) && (!done) && (second_done))
             {
                 cout << "PIN: POST" << endl;
                 done = true;
                 for (int i = 0; i < thread_count; i++)
-                {
+                {           
                     if (semaphores[i].wait > 0)
                     {
                         semaphores[i].wait--;
@@ -623,10 +661,12 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                 }
             }
         }
+
     ADDRINT TakenIP = (ADDRINT)PIN_GetContextReg( ctxt, REG_INST_PTR );
         std::deque<relax_info>::iterator it = relax_ds.begin();
         {
-            if ((tid == it->tid1) && (tld->insCount == it->count1) && (!it->done) && (!it->executed1))
+	      //cout << it->tid1 << tld->insCount << " " << it->done<< it->executed1 << stack_end <<endl;
+            if ((tid == it->tid1) && (tld->insCount == it->count1) && (!it->done) && (!it->executed1) && ((stack_end && !race) || (!stack_end && race)))
             {
                 cout << "PIN: ***************************   DELETE1   **********************"  << stack.front().tid << " " << stack.front().count << endl;
                 for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
@@ -637,22 +677,17 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                     {
                         si->pro = true;
                     }
-                    //stack_end = true;
                 }
-                if (tld->insCount >= order[tid].front())
+		state st;
+		st.tid = it->tid1;
+		st.count = it->count1;
+		deleted_state.push_back(st);
+                if (tld->insCount >= order[tid].front().count)
                 {
                     order[tid].pop_front();
                     cout << "PIN: popping1" << endl;
                 }
-
-
-                //PIN_SetContextReg(ctxt, REG_INST_PTR, (ADDRINT)(TakenIP));
-                //it->ctxt1 = ctxt;
                 PIN_SaveContext (ctxt, it->ctxt1);
-                //PIN_SetContextReg(it->ctxt1, REG_INST_PTR, (ADDRINT)(TakenIP));
-                //cout << "PIN: Context 1" << it->ctxt1 << endl;
-                //PIN_SetContextReg(it->ctxt1, REG_INST_PTR, (ADDRINT)(ctxt));
-                //PIN_SetContextReg(ctxt, REG_INST_PTR, (ADDRINT)(TakenIP + size));
                 PIN_SetContextReg(ctxtx, REG_INST_PTR, (ADDRINT)(TakenIP + size));
                 it->executed1 = true;
                 PIN_ExecuteAt(ctxtx);
@@ -667,47 +702,29 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                         si->done = true;
                     }
                 }
-                if (tld->insCount >= order[tid].front())
-                {order[tid].pop_front(); cout << "PIN: popping " << tid << " " << order[tid].front() << endl;}
-                //PIN_SetContextReg(ctxtx, REG_INST_PTR, addr1);
-                //it->ctxt2 = ctxt;
+                for (std::deque<state>::iterator ds = deleted_state.begin(); ds != deleted_state.end(); ++ds)
+		{
+		    if((ds->tid == it->tid1) && (ds->count == it->count1))
+	            {
+			deleted_state.erase(ds);
+			break;
+		    }
+		}
+                if (tld->insCount >= order[tid].front().count)
+                {order[tid].pop_front(); cout << "PIN: popping " << tid << " " << order[tid].front().count << endl;}
                 it->saved = TakenIP;
                 PIN_SetContextReg(it->ctxt2, REG_INST_PTR, (ADDRINT)(TakenIP + size));
-                //PIN_SaveContext (ctxt, it->ctxt2);
                 it->executed2 = true;
                 tld->insCount = it->count1 - 1;
                 PIN_ExecuteAt(it->ctxt1);
             }
-            /*  if ((tid == it->tid2) && (tld->insCount == it->count2 + 3) && (it->executed1) && (it->executed2) && (!it->done))
-              {
-                it->done = true;
-            stack_end = true;
-            cout << "PIN: ***************************   POST1   **********************" << endl;
-            done = true;
-            for(int i = 0; i < thread_count; i++)
-               {
-                if (semaphores[i].wait > 0)
-                       {
-                       semaphores[i].wait--;
-                       sem_post(&semaphores[i].s);
-                       }
-               }
-
-                //tld->insCount = tld->insCount - 3;
-                //PIN_SetContextReg(it->ctxt2, REG_INST_PTR, (ADDRINT)(TakenIP + size));
-            //PIN_SetContextReg(ctxtx, REG_INST_PTR, addr2);
-                //PIN_ExecuteAt(it->ctxt2);
-                }*/
-
         }
         if (!first_run) {
             for (std::deque<relax_info>::iterator it = relax_ds.begin(); it != relax_ds.end(); ++it)
             {
                 if (it !=  relax_ds.begin()) {
-                    //cout <<  "UNSEEEEEEEEEEE " << it->tid1 << " " << it->count1 << " " << it->count2 << endl;
                     if ((tid == it->tid1) && (tld->insCount == it->count1) && (!it->done) && (!it->executed1))
                     {
-                        //ADDRINT TakenIP = (ADDRINT)PIN_GetContextReg( ctxt, REG_INST_PTR );
                         cout << "PIN: **** DELETE ********" << stack.front().tid << " " << stack.front().count << " " << tid << it->count1 << endl;
 
                         for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
@@ -720,8 +737,11 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                                     si->pro = true;
                                 }
                             }
+			    state st;
+			    st.tid = it->tid1;
+			    st.count = it->count1;
+			    deleted_state.push_back(st);	
                             // if ((tid == tid1) && (tld->insCount=count1) && (!race))
-                            //   stack_end = true;
                             if ((curr_state.tid == tid) && (curr_state.count == tld->insCount))
                             {
                                 curr_state = next_state;
@@ -739,7 +759,7 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                                 waited = false;
                             }
                         }
-                        if (tld->insCount >= order[tid].front())
+                        if (tld->insCount >= order[tid].front().count)
                         {
                             order[tid].pop_front();
                             cout << "PIN: popping1" << endl;
@@ -754,12 +774,21 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                     {
                         cout << "PIN: ***** INSERT **********" << stack.front().tid << " " << stack.front().count  << " " << tid << it->count2 << tld->insCount << endl;
                         it->saved = TakenIP;
+                        for (std::deque<state>::iterator ds = deleted_state.begin(); ds != deleted_state.end(); ++ds)
+			{
+			    if((ds->tid == it->tid1) && (ds->count == it->count1))
+			    {
+			        deleted_state.erase(ds);
+				break;
+			    }
+			}
                         for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
                         {
                             if ((si->tid == tid) && (si->count == it->count2))
                             {
                                 si->done = true;
                             }
+
                             if ((curr_state.tid == tid) && (curr_state.count == it->count2))
                             {
                                 curr_state = next_state;
@@ -778,21 +807,13 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                             }
 
                         }
-                        if (tld->insCount >= order[tid].front())
+                        if (tld->insCount >= order[tid].front().count)
                         {order[tid].pop_front(); cout << "PIN: popping2" << endl;}
                         it->ctxt2 = ctxt;
                         it->executed2 = true;
                         tld->insCount = it->count1 - 1;
                         PIN_ExecuteAt(it->ctxt1);
                     }
-                    /*  if ((tid == it->tid2) && (tld->insCount == it->count2 + 2) && (it->executed1) && (it->executed2) && (!it->done))
-                      {
-                        cout << "PIN: ***************************   EVEN   **********************" << endl;
-                        cout << it->tid1 << tid1 << it->tid2 << tid2 << it->count1 << count1 << it->count2 << count2 << endl;
-                        it->done = true;
-                        PIN_ExecuteAt(it->ctxt2);
-                        tld->insCount--;
-                        }*/
                 }
             }
         }
@@ -856,48 +877,38 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                 }
                 PIN_UnlockClient();
             }
-            while ((order[curr_state.tid].front() < curr_state.count) && (order[curr_state.tid].size() > 0) && (order[curr_state.tid].front() > 0))
+            while ((order[curr_state.tid].front().count < curr_state.count) && (order[curr_state.tid].size() > 0) && (order[curr_state.tid].front().count > 0))
             {
-                cout << "PIN: popping 1" << order[curr_state.tid].front() << " " << curr_state.count << endl;
+                cout << "PIN: popping 1" << order[curr_state.tid].front().count << " " << curr_state.count << endl;
                 order[curr_state.tid].pop_front();  /*Pop for same threads*/
-                cout << "PIN: Current top " << order[curr_state.tid].front() << endl;
+                cout << "PIN: Current top " << order[curr_state.tid].front().count << endl;
             }
-            while ((order[next_state.tid].front() < next_state.count) && (order[next_state.tid].size() > 0) && (order[next_state.tid].front() > 0))
+            while ((order[next_state.tid].front().count < next_state.count) && (order[next_state.tid].size() > 0) && (order[next_state.tid].front().count > 0))
             {
-                cout << "PIN: popping 2" << order[next_state.tid].front() << " " << next_state.count << endl;
+                cout << "PIN: popping 2" << order[next_state.tid].front().count << " " << next_state.count << endl;
                 order[next_state.tid].pop_front(); /*Pop for same threads*/
-                cout << "PIN: Next top " << order[next_state.tid].front() << endl;
+                cout << "PIN: Next top " << order[next_state.tid].front().count << endl;
             }
-            if ((pre_executed) && (curr_state.tid == tid))
+
+            if ((((tld->insCount >= order[tid].front().count) && (curr_state.tid == tid) && (curr_state.count <= tld->insCount))) && (!executed))
             {
-                executed = true;
-                pre_executed = false;
-                if (semaphores[next_state.tid].wait > 0)
-                {
-                    semaphores[next_state.tid].wait--;
-                    sem_post(&semaphores[next_state.tid].s);
-                    cout << "PIN: **************** POSTING****************" << endl;
-                }
-            }
-            if ((((tld->insCount >= order[tid].front()) && (curr_state.tid == tid) && (curr_state.count <= tld->insCount))) && (!executed))
-            {
-                cout << "PIN: front of current state " << order[tid].front() << " " << tid << " " << curr_state.count << " " << next_state.tid << " " << next_state.count << endl;
+                cout << "PIN: front of current state " << order[tid].front().count << " " << tid << " " << curr_state.count << " " << next_state.tid << " " << next_state.count << endl;
                 cout << "PIN: current tid " << tid << endl;
                 pre_executed = true;
                 order[tid].pop_front();
                 sched_yield();
-                cout << "PIN: top of order's current state " << order[tid].front() << " " << tid << " " << curr_state.count << " " << semaphores[0].wait << semaphores[1].wait << semaphores[2].wait << endl;
+                cout << "PIN: top of order's current state " << order[tid].front().count << " " << tid << " " << curr_state.count << " " << semaphores[0].wait << semaphores[1].wait << semaphores[2].wait << endl;
 
             }
-            if ((tid == next_state.tid) && (tld->insCount >= order[next_state.tid].front()) && (!waited) && (order[next_state.tid].front() != 0))
+            if ((tid == next_state.tid) && (tld->insCount >= order[next_state.tid].front().count) && (!waited) && (order[next_state.tid].front().count != 0))
             {
-                cout << "PIN: current pair " << curr_state.tid << " " << curr_state.count << " " << next_state.tid << " " << next_state.count << endl;
+                cout << "PI N: current pair " << curr_state.tid << " " << curr_state.count << " " << next_state.tid << " " << next_state.count << endl;
                 cout << "PIN: waiting for next state " << tid << " " << tld->insCount << endl;
                 waited = true;
                 order[tid].pop_front();
-                cout << "PIN: order after waiting for next state " << tid << " " << order[tid].front() << endl;
+                cout << "PIN: order after waiting for next state " << tid << " " << order[tid].front().count << endl;
                 string curr = std::to_string(curr_state.tid) + "_" + std::to_string(curr_state.count) + "_" + "r_{" + std::to_string(curr_state.tid) + "}_{" + std::to_string(curr_state.tid) + "}_[]_{}";
-
+		cout << executed <<" "<< curr << endl;
                 if ((!executed) && ((std::find(execution.begin(), execution.end(), curr) == execution.end())))
                 {
                     if (semaphores[curr_state.tid].wait > 0)
@@ -915,17 +926,19 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                     }
                 }
             }
-            if (((tid == curr_state.tid) || (tid == next_state.tid)) && (tld->insCount >= order[tid].front()) && (order[tid].front() != 0))
+            if (((tid == curr_state.tid) || (tid == next_state.tid)) && (tld->insCount >= order[tid].front().count) && (order[tid].front().count != 0))
             {
                 if ((tid == next_state.tid) && (tld->insCount > next_state.count))
                 {
-                    next_execute = true; // set true if the next state has already executed
+                    next_execute = true; 
+		    cout << "Next Execute" <<endl;
+		    // set true if the next state has already executed
                 }
-                cout << "PIN: Same thread waiting " << tid << " " << tld->insCount << " " << order[tid].front() << endl;
+                cout << "PIN: Same thread waiting " << tid << " " << tld->insCount << " " << order[tid].front().count << curr_state.count << " " << next_state.count<< endl;
                 next_tid = stack[1].tid; // assign the next active state *Check*
                 next_count = stack[1].count;
-                cout << "PIN: Same thread waiting post " << tid << " " << tld->insCount << " " << order[tid].front() << endl;
-                if (((tid == next_state.tid) || (tid == curr_state.tid)) && (tld->insCount == order[tid].front()) && (tid == next_tid) && (tld->insCount == next_count) && (waited && executed))
+                cout << "PIN: Same thread waiting post " << tid << " " << tld->insCount << " " << order[tid].front().count << endl;
+                if (((tid == next_state.tid) || (tid == curr_state.tid)) && (tld->insCount == order[tid].front().count) && (tid == next_tid) && (tld->insCount == next_count) && (waited && executed))
                 {
                     waited = false;
                     executed = false;
@@ -955,13 +968,13 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
 
                 if ((semaphores[tid].wait < 1) && (!not_wait))
                 {
-                    cout << "PIN: Same thread waiting :WAITS" << tid << " " << tld->insCount << endl;
+                    cout << "PIN: Same thread waiting :WAITS" << tid << " " << tld->insCount << " " << semaphores[0].wait<< semaphores[1].wait<< semaphores[2].wait<< endl;
                     semaphores[tid].wait++;
                     sem_wait(&semaphores[tid].s);
                 }
                 not_wait = false;
             }
-            if ((tid != curr_state.tid) && (tid != next_state.tid) && (order[tid].front() > 0) && (tld->insCount >= order[tid].front() ))
+            if ((tid != curr_state.tid) && (tid != next_state.tid) && (order[tid].front().count > 0) && (tld->insCount >= order[tid].front().count ) && (!done))
             {
                 cout << "PIN: other thread waiting for next state " << tid << " " << tld->insCount << " " << curr_state.tid << " " << next_state.tid << " " << semaphores[curr_state.tid].wait << semaphores[next_state.tid].wait << endl;
                 if (!executed)
@@ -983,6 +996,14 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
             if ((tid == next_state.tid) && (tld->insCount > next_state.count))
             {
                 next_execute = true;
+                for (std::deque<state>::iterator ds = deleted_state.begin(); ds != deleted_state.end(); ++ds)
+		{
+		    if((ds->tid == next_state.tid) && (ds->count == next_state.count))
+		    {
+			next_execute = false;
+			break;
+		    }
+		}
             }
             if (waited && executed && next_execute)
             {
@@ -1008,7 +1029,6 @@ VOID incrementThreadINS(THREADID tid, ADDRINT ins_addr, INS ins, CONTEXT *ctxt, 
                     semaphores[curr_state.tid].wait--;
                     sem_post(&semaphores[curr_state.tid].s);
                 }
-                //sched_yield();
             }//    if(waited && executed)
         }  // if((!reverse_point)&&(!stack_end))
     }    //if((!first_run)&&(!finished)&&(!stack_end))
@@ -1031,7 +1051,7 @@ VOID MemoryReadInst(THREADID threadid, ADDRINT effective_address, int i )
     if (lookup != memSet.end()) {
         ThreadLocalData* tld = getTLS(threadid);
         PIN_GetLock(&GlobalLock, tld->threadId);
-        cout << "PIN: Read " << threadid << " " << tld->insCount << " " << effective_address << endl;
+        cout << "PIN: Read " << threadid << " " << tld->insCount << " " << effective_address  << " " << ins_l << endl;
         //sharedAccesses << tld->threadId << " " << tld->insCount << " r " << effective_address << "," << endl;
         PIN_ReleaseLock(&GlobalLock);
         tld->addAddressToLockRead(effective_address);
@@ -1043,10 +1063,22 @@ VOID MemoryReadInst(THREADID threadid, ADDRINT effective_address, int i )
         (*lookup)->accessingInstructions.push_back(tld->insCount);
         (*lookup)->accessClocks.push_back(*(tld->currentVectorClock));
         int size = (*lookup)->accesses.size();
+
         if ((threadid == break_point.tid) && (tld->insCount == break_point.count))
         {
             stack_end = true;
+	    reached_breakpoint = true;
+            if (semaphores[tid2].wait > 0)
+            {
+                semaphores[tid2].wait--;
+                sem_post(&semaphores[tid2].s);
+            }
         }
+
+        if ((threadid == tid2) && (tld->insCount == count2))
+	    {
+	    second_done = true;
+	    }
         for (int k = 0; k < size - 1; k++) {
             if ((*lookup)->accesses[k] == 'w') {
                 if ((*lookup)->accessClocks[k].areConcurrent(&((*lookup)->accessClocks[size - 1]))) {
@@ -1084,6 +1116,21 @@ VOID MemoryReadInst(THREADID threadid, ADDRINT effective_address, int i )
                 tld->insCount = it->count2;
             }
         }
+            if ((pre_executed) && (curr_state.tid == threadid))
+            {
+                executed = true;
+                pre_executed = false;
+                cout << "PIN: **************** PRE ExECUTE****************" << endl;
+		if (!((next_state.tid == tid1) && (next_state.count == count1) && (!done)))		
+                {
+		    if (semaphores[next_state.tid].wait > 0)
+                    {
+                        semaphores[next_state.tid].wait--;
+                        sem_post(&semaphores[next_state.tid].s);
+                        cout << "PIN: **************** POSTING****************" << endl;
+		    }
+                }
+            }
         PIN_ReleaseLock(&((*lookup)->MemoryLock));
     }
 
@@ -1106,7 +1153,7 @@ VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i) {
         ThreadLocalData* tld = getTLS(threadid);
         PIN_GetLock(&GlobalLock, tld->threadId);
         //sharedAccesses << tld->threadId << " " << tld->insCount << " w " << effective_address << "," << endl;
-        cout << "PIN: write " << threadid << " " << tld->insCount  << " " << effective_address << endl;
+        cout << "PIN: write " << threadid << " " << tld->insCount  << " " << effective_address << " " << ins_s << endl;
         PIN_ReleaseLock(&GlobalLock);
         tld->addAddressToLockWrite(effective_address);
         tld->currentVectorClock->event();
@@ -1117,10 +1164,21 @@ VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i) {
         (*lookup)->accessingInstructions.push_back(tld->insCount);
         (*lookup)->accessClocks.push_back(*(tld->currentVectorClock));
         int size = (*lookup)->accesses.size();
+
         if ((threadid == break_point.tid) && (tld->insCount == break_point.count))
         {
             stack_end = true;
+	    reached_breakpoint = true;
+            if (semaphores[tid2].wait > 0)
+            {
+                semaphores[tid2].wait--;
+                sem_post(&semaphores[tid2].s);
+            }
         }
+        if ((threadid == tid2) && (tld->insCount == count2))
+	    {
+	    second_done = true;
+	    }
         for (int k = 0; k < size - 1; k++) {
             if ((*lookup)->accessClocks[k].areConcurrent(&((*lookup)->accessClocks[size - 1]))) {
                 instructions << "race " << (*lookup)->accessingThread[k] << " " << (*lookup)->accessingInstructions[k] << " " << (*lookup)->accessingThread[size - 1] << " " <<   (*lookup)->accessingInstructions[size - 1] << endl;
@@ -1155,6 +1213,21 @@ VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i) {
                 tld->insCount = it->count2;
             }
         }
+            if ((pre_executed) && (curr_state.tid == threadid))
+            {
+                executed = true;
+                pre_executed = false;
+                    cout << "PIN: **************** PRE ExECUTE****************" << endl;
+		if (!((next_state.tid == tid1) && (next_state.count == count1) && (!done)))		
+                {
+		    if (semaphores[next_state.tid].wait > 0)
+                    {
+                        semaphores[next_state.tid].wait--;
+                        sem_post(&semaphores[next_state.tid].s);
+                        cout << "PIN: **************** POSTING****************" << endl;
+		    }
+                }
+            }
         PIN_ReleaseLock(&((*lookup)->MemoryLock));
     }
 
@@ -1162,9 +1235,9 @@ VOID MemoryWriteInst(THREADID threadid, ADDRINT effective_address, int i) {
 
 void __BreakPoint(THREADID tid)
 {
-
+bool set_break = false;
     ThreadLocalData *tld = getTLS(tid);
-//cout << "PIN: In Breakpoint " << tid << " " << tld->insCount <<" "<< tid1<<" "<<count1 << " " <<tid2 <<" "<< count2 << endl;
+    //cout << "PIN: In Breakpoint " << tid << " " << tld->insCount <<" "<< tid1<<" "<<count1 << " " <<tid2 <<" "<< count2 << endl;
     if ((tid == break_point.tid) && (tld->insCount == break_point.count))
     {
         cout << "PIN: BREAKPOINT" << endl;
@@ -1172,12 +1245,49 @@ void __BreakPoint(THREADID tid)
     }
     if ((tid == tid2) && (tld->insCount == count2 - 1))
     {
-        for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
+	 std::deque<state>::iterator si = stack.begin();
+         for (; si != stack.end(); ++si)
         {
-            if ((si->tid == tid) && (si->count == tld->insCount))
-                if (! si->done)
+	    cout << si->tid << " " << si->count <<endl;
+	    if ((curr_state.tid == tid) && (curr_state.count > tld->insCount+1) && (!executed))
+		break;
+            if ((si->tid == tid) && (si->count > tld->insCount+1 ) && (!si->done))	
+		{
+		break;
+		}    
+            if ((si->tid == tid) && (si->count == tld->insCount+1 ))
+	       {
+                if (/*(!si->done) */(!reached_breakpoint) && (break_point.tid != tid2))
                 {
                     cout << "PIN: BREAKPOINT WAIT 2 " << tid2 << endl;
+                    if (semaphores[tid2].wait < 1)
+                    {
+                        wait_at_break[1] = true;
+                        semaphores[tid2].wait++;
+                        sem_wait(&semaphores[tid2].s);
+                    }
+                }
+	    }
+        }
+    }
+   /*if ((tid == tid2) && (tld->insCount == count2))
+    {
+        cout << "PIN: BREAKPOINT WAIT 3X " << tid2 << endl;
+        for (std::deque<state>::iterator ds = deleted_state.begin(); ds != deleted_state.end(); ++ds)
+	{
+	    if((ds->tid == tid2) && (ds->count == count2))
+	    {
+		set_break = true;
+	    }
+	}
+	std::deque<state>::iterator si = stack.begin();
+        for (; si != stack.end(); ++si)
+            {
+	    if (set_break)
+		break;
+	    if ((si->tid == tid) && (si->count == tld->insCount) && (si->done) && (break_point.tid != tid2))
+		{
+                    cout << "PIN: BREAKPOINT WAIT 3 " << tid2 << endl;
                     if (!reached_breakpoint)
                     {
                         if (semaphores[tid2].wait < 1)
@@ -1188,26 +1298,37 @@ void __BreakPoint(THREADID tid)
                         }
                     }
                 }
-        }
-    }
+ 	    }
+    }*/
     if ((tid == tid1) && (tld->insCount == count1) && (!first_run))
     {
-        for (std::deque<state>::iterator si = stack.begin(); si != stack.end(); ++si)
+	 std::deque<state>::iterator si = stack.begin();
+         for (; si != stack.end(); ++si)
         {
+	    cout << si->tid << " " << si->count <<endl;
+	    if ((curr_state.tid == tid) && (curr_state.count > tld->insCount+1) && (!executed))
+		break;
+            if ((si->tid == tid) && (si->count > tld->insCount ) && (!si->done))	
+		{
+		break;
+		}   
             if ((si->tid == tid) && (si->count == tld->insCount))
-                if (! si->done)
+                {if (! si->done)
                 {
                     cout << "PIN: BREAKPOINT WAIT 1 " << tid1 << endl;
                     if (!reached_breakpoint)
                     {
+                   // cout << "PIN: BREAKPOINT WAIT 1 " << tid1 << endl;
                         if (semaphores[tid1].wait < 1)
                         {
+                   // cout << "PIN: BREAKPOINT WAIT 1 " << tid1 << endl;
                             wait_at_break[0] = true;
                             semaphores[tid1].wait++;
                             sem_wait(&semaphores[tid1].s);
                         }
                     }
                 }
+	    }	
         }
     }
     if ((reached_breakpoint) && (wait_at_break[0]) && ((done && race) || (!race)))
@@ -1363,8 +1484,9 @@ VOID Trace(TRACE trace, VOID *val)
                 return;
             if (IMG_Valid (img))
                 img_name = IMG_Name(img);
-            if ((!filter.SelectTrace(trace)) && (img_name.find("bzip") == std::string::npos))
+            if ((!filter.SelectTrace(trace)) /*&& (img_name.find("bzip") == std::string::npos)*/)
                 return;
+	    //cout << img_name <<endl;	
 
             if (INS_IsAtomicUpdate(ins)) {
 
@@ -1429,7 +1551,7 @@ VOID Fini(INT32 code, void *v)
                         for ( int l = 0 ; l < execution.size(); l++ )
                         {
 
-                            if ((l == race_point - 1) && (race) && (enabled[l].find(second) != std::string::npos))
+                            if ((l == race_point - 1) && (race) && (enabled[l].find(second) != std::string::npos) && (second != ""))
                             {
                                 if (only)
                                     enabled[l] = enabled[l].substr(0, enabled[l].find(second)) + "}";
@@ -1448,10 +1570,14 @@ VOID Fini(INT32 code, void *v)
                             if ((index != std::string::npos) && (index < execution[l].find_first_of('{')))
                             {
                                 total++;
+				cout << "TEMP " << temp  <<" " <<execution[l]<<" "<<instruction2 <<endl;
                                 if ((execution[l].find(instruction2) != std::string::npos) && ((execution[l].find(instruction2) < execution[l].find_first_of('{'))) && (race))
                                 {
+
                                     if (((*i)->accessingThread[j] == tid1) && ((*i)->accessingInstructions[j] == count1))
-                                        continue;
+                                       { 
+				cout << "TEMP " << temp  <<" " <<execution[l]<<" "<<instruction2 <<endl;
+					continue;}
                                 }
                                 if ((first_run) || (l >= race_point - 1))
                                 {
@@ -1465,6 +1591,7 @@ VOID Fini(INT32 code, void *v)
                                         temp = temp.substr(0, temp.length() - 1);
                                         temp = temp + "," + std::to_string((*i)->accessingThread[j]) + "_" +  std::to_string((*i)->accessingInstructions[j]) + "_" + (*i)->accesses[j] + "}";
                                     }
+
 
                                 }
                             }
@@ -1490,13 +1617,14 @@ VOID Fini(INT32 code, void *v)
             {
                 for (int m = 0; m < execution.size(); m++)
                 {
-                    if ((m == race_point - 1) && (!race) && (enabled[m].find(second) != std::string::npos))
+                    if ((m == race_point - 1) && (!race) /*&& (enabled[m].find(second) != std::string::npos) && (second != "") */&& (!set_extra) && (!hash_added ))
                     {
+			hash_added = true;
                         if (only)
                             enabled[m] = enabled[m].substr(0, enabled[m].find(second)) + enabled[m].substr(enabled[m].find_last_of(']'));
                         else
                             enabled[m] = enabled[m].substr(0, enabled[m].find(second) - 1) + enabled[m].substr(enabled[m].find_last_of(']'));
-                        enabled[m] = enabled[m].substr(0, enabled[m].find_first_of('}') + 1) + "_#" + std::to_string(relax_ds.front().tid2) + " " + std::to_string(relax_ds.front().count2) + "#" + enabled[m].substr(enabled[m].find_first_of('}') + 1);
+                        enabled[m] = enabled[m].substr(0, enabled[m].find_first_of('}') + 1) + "_#" + std::to_string(relax_ds.front().tid1) + "_" + std::to_string(relax_ds.front().count1) +"_"+ std::to_string(relax_ds.front().tid2) + "_" + std::to_string(relax_ds.front().count2) + "#" + enabled[m].substr(enabled[m].find_first_of('}') + 1);
                     }
 
                     if ((relax_struct[i].second[l].type == 'w') && ((k - l) <= window_size) && (relax_struct[i].second[l].addr != relax_struct[i].second[k].addr))
@@ -1552,6 +1680,138 @@ VOID Fini(INT32 code, void *v)
     for (int i = 0; i < execution.size(); i++)
     {
         string id = "*";
+	if ((i == race_point - 1) && (!first_run))
+	{
+	    string temp = execution[i];
+    	    string half = temp.substr(0, temp.find_first_of('{')-1);
+	    int tx = std::stoi(half.substr(0,half.find_first_of('_')));
+	    half = half.substr(half.find_first_of('_')+1);
+	    int cx = std::stoi(half.substr(0,half.find_first_of('_')));
+	    if (!((tx == tid2) && (count2 == cx)))
+	    {
+		set_swap = true; 
+	    }	
+	    {
+	    /*if ((tx == tid2) && (count2 == cx))	
+	    {
+		if (race)
+		{
+		    string race_str = temp.substr(temp.find_last_of('{')+1, temp.find_last_of('}'));
+		}
+	    }	
+	    if (!(((tx == tid2) && (count2 == cx)) || ((tx == tid1) && (count1 == cx))))
+	    {
+	    }*/
+	    if (((temp.at(temp.length()-2) != '{') || (temp.at(temp.find_last_of(']') -1) != '[')) )
+	    {
+
+
+		string id_x = temp.substr(0, temp.find_first_of('{') - 3);
+		while ((temp.at(temp.length()-2) != '{'))
+		    {
+		    cout << "IN WHILE 1 " << temp <<endl;
+		    string between = temp.substr(temp.find_last_of('{') + 1);
+		    between = between.substr(0, between.length() - 1); 
+		    if(between.find(",") != std::string::npos)
+			{
+			string last_race = between.substr(between.find_last_of(',') + 1);
+			last_race = last_race.substr(0, last_race.find_last_of('_'));
+			between = between.substr(0, between.find_last_of(','));
+			temp = temp.substr(0, temp.find_last_of('{') + 1) + between + "}";
+		        if (enabled[i].find('>') != std::string::npos)
+			    { 
+		    cout << "IN WHILE 1 x " << temp <<endl;
+			    if (enabled[i].at(enabled[i].find_last_of('>')-1) != '<')
+				{
+		    cout << "IN WHILE 1 y " << temp <<endl;
+			        if ((id_x != state_2) || (last_race != state_1))
+				    enabled[i] = enabled[i].substr(0, enabled[i].find_last_of('>')) + "," +id_x + "_" + last_race +enabled[i].substr(enabled[i].find_last_of('>'));
+				}
+			    }
+			else
+ 			    {
+		    		cout << "IN WHILE 1 z " << temp <<endl;
+			    if ((id_x != state_2) || (last_race != state_1))
+			        enabled[i] = enabled[i].substr(0, enabled[i].find_first_of('}')+1) + "_<" + id_x + last_race + ">" +enabled[i].substr( enabled[i].find_first_of('}')+1);
+			    }
+			}
+		    else
+			{
+		    cout << "IN WHILE 1 t " << temp <<endl;
+			string last_race = between.substr(0, between.find_last_of('_'));
+			temp = temp.substr(0, temp.find_last_of('{') + 1) + "}";	
+		        if (enabled[i].find('>') != std::string::npos)
+			    {
+			    if (enabled[i].at(enabled[i].find_last_of('>')-1) != '<')
+				{
+		    cout << "IN WHILE 1 t11 " << temp <<endl;
+			        if ((id_x != state_2) || (last_race != state_1)){
+				    enabled[i] = enabled[i].substr(0, enabled[i].find_last_of('>')) + "," + id_x + "_" + last_race +enabled[i].substr(enabled[i].find_last_of('>'));
+		    cout << "IN WHILE 1 t2 " << temp <<endl;
+}
+				}
+			    }
+			else
+ 			    {
+			    if ((id_x != state_2) || (last_race != state_1))
+			        enabled[i] = enabled[i].substr(0, enabled[i].find_first_of('}')+1) + "_<" + id_x + "_" + last_race + ">" +enabled[i].substr( enabled[i].find_first_of('}')+1);
+			    }
+			}
+		    }		
+		while (temp.at(temp.find_last_of(']') -1) != '[')
+		    {
+		    cout << "IN WHILE 2 " <<temp<<endl;
+		    string between = temp.substr(temp.find_first_of('[') + 1, temp.find_last_of(']') - temp.find_first_of('['));
+		    if(between.find(".") != std::string::npos)
+			{
+		    cout << "IN WHILE 2 ***********" <<temp<<endl;
+			string last_relax = between.substr(between.find_last_of('.')+1);
+			last_relax = last_relax.substr(0, last_relax.find_last_of('_'));
+			between = between.substr(0, between.find_last_of('.'));
+			temp = temp.substr(0, temp.find_first_of('[') + 1) + between + temp.substr(temp.find_last_of('['));
+		        if (enabled[i].find('<') == std::string::npos)
+			    { 
+			    if (enabled[i].at(enabled[i].find_last_of('>')-1) != '<')
+				{
+			        if ((id_x != state_2) || (last_relax != state_1))
+				    enabled[i] = enabled[i].substr(0, enabled[i].find_last_of('>')) + "," +id_x + "_" + last_relax + enabled[i].substr(enabled[i].find_last_of('>'));
+				}
+			    }
+			else
+ 			    {
+			    if ((id_x != state_2) || (last_relax != state_1))
+			        enabled[i] = enabled[i].substr(0, enabled[i].find_first_of('}')+1) + "_<" + id_x + "_" + last_relax + ">" +enabled[i].substr( enabled[i].find_first_of('}')+1);
+			    }
+			}
+		    else
+			{
+		    cout << "IN WHILE 2 xxxx" <<temp<<endl;
+			string last_relax = between.substr(0, between.find_last_of('_'));
+			//last_relax = last_relax.substr(0, last_relax.find_last_of('_')+4);
+			between = "";
+			temp = temp.substr(0, temp.find_first_of('[') + 1) + temp.substr(temp.find_last_of(']'));
+		        if (enabled[i].find('<') != std::string::npos)
+			    {
+		    cout << "IN WHILE 2 xxxx" <<temp<<endl;
+			    if (enabled[i].at(enabled[i].find_last_of('>')-1) != '<')
+				{
+		    cout << "IN WHILE 2 xxxx" <<temp<<endl;
+			        if ((id_x != state_2) || (last_relax != state_1))
+				  {
+		    cout << "IN WHILE 2 xxxx" <<temp<<endl;  enabled[i] = enabled[i].substr(0, enabled[i].find_last_of('>')) + "," + id_x + "_" + last_relax +enabled[i].substr(enabled[i].find_last_of('>'));}
+				} 
+			    }
+			else
+ 			    {
+			    cout << id_x << " " << state_2 << " " << last_relax << " " << state_1 << endl;
+			    if ((id_x != state_2) || (last_relax != state_1))
+			       enabled[i] = enabled[i].substr(0, enabled[i].find_first_of('}')+1) + "_<" + id_x + "_" + last_relax + ">" +enabled[i].substr( enabled[i].find_first_of('}')+1);
+			    }
+			}
+		    }
+		}
+  	    }
+	}
         if ((i == race_point - 1) && (enabled[i].find("explore") == std::string::npos))
             id = "*explore";
         if (!first_run)
@@ -1597,7 +1857,8 @@ int main(int argc, char * argv[])
 {
 
     state st;
-    deque<int> dq = {};
+    deque<stack_element> dq = {};
+    stack_element se;
     relax_info ri;
     int p = 0;
     instructions.open("instructions.out");
@@ -1630,11 +1891,28 @@ int main(int argc, char * argv[])
                     }
                 }
                 if (p > 0)
-                {   /*for other runs, store into order*/
-                    if ((order[st.tid].size() > 0) && (order[st.tid][order[st.tid].size() - 1] < st.count))
-                        order[st.tid].push_back(st.count);
+                {   
+		    se.count = st.count;
+		    /*for other runs, store into order*/
+                    if ((order[st.tid].size() > 0) && (order[st.tid][order[st.tid].size() - 1].count < st.count))
+		    {	
+                        order[st.tid].push_back(se);
+		    }
+                    if ((order[st.tid].size() > 0) && (order[st.tid][order[st.tid].size() - 1].count > st.count))
+		    {	
+			cout << "PUSHING in to ENABLED ORDER" << endl;
+                        order[st.tid].back().enabled = true;
+                        order[st.tid].back().count2 = st.count;
+	                ri.tid1 = st.tid;
+                	ri.tid2 = st.tid;
+                	ri.count1 = st.count;
+                	ri.count2 = order[st.tid][order[st.tid].size() - 1].count;
+                	ri.ins = "";
+			relax_ds_temp.push_back(ri);
+
+		    }
                     if (order[st.tid].size() == 0)
-                        order[st.tid].push_back(st.count);
+                        order[st.tid].push_back(se);
                 }
                 stack.push_back(st);
                 p++;
@@ -1661,6 +1939,7 @@ int main(int argc, char * argv[])
                 if (prev_exec[i].at(prev_exec[i].find_last_of(']') - 1) != '[')
                     prev_exec[i] = prev_exec[i].substr(0, prev_exec[i].find_first_of('[') + 1) + prev_exec[i].substr(prev_exec[i].find_last_of(']'));
             }
+
             if (enabled[i - 1].find("explore") != std::string::npos)
                 enabled[i - 1] =  enabled[i - 1].substr(7);
             std::size_t h2 = enabled[i - 1].find_last_of('#');
@@ -1681,6 +1960,54 @@ int main(int argc, char * argv[])
             string temp1 = state1.substr(us + 1);
             std::size_t ls = temp1.find_first_of('_');
             count1 = std::stoi(temp1.substr(0, ls));
+            if (enabled[i - 1].find("<") != std::string::npos)
+	        {
+		string extra = enabled[i-1].substr(enabled[i-1].find_first_of('<')+1, enabled[i-1].find_last_of('>')-enabled[i-1].find_first_of('<'));
+		if (extra.find(",") != std::string::npos)
+		    {
+		    string _extra = extra.substr(0,extra.find_last_of(','));		    
+		    extra = extra.substr(extra.find_last_of(',') + 1);
+		    tid1_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    count1_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    tid2_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    count2_x = std::stoi(extra);
+		    enabled[i-1] =enabled[i-1].substr(0,enabled[i-1].find_first_of('<')+1) + _extra + enabled[i-1].substr(enabled[i-1].find_last_of('>'));
+		    }
+		else
+		    {
+		    tid1_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    count1_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    tid2_x = std::stoi(extra.substr(0, extra.find_first_of('_')));
+		    extra = extra.substr(extra.find_first_of('_') + 1);
+		    count2_x = std::stoi(extra);
+		    enabled[i-1] =enabled[i-1].substr(0,enabled[i-1].find_first_of('<'))+enabled[i-1].substr(enabled[i-1].find_last_of('>')+2);
+		    }
+		tid1 = tid1_x;
+		tid2 = tid2_x;
+		count1 = count1_x;
+		count2 = count2_x;
+		set_extra = true;
+		if (tid1 != tid2)
+		    race = true;
+		else
+		    race = false;
+		    race_point = i;
+		if (!race)
+		    {
+               	    ri.tid1 = tid1;
+                    ri.tid2 = tid2;
+                    ri.count1 = count1;
+                    ri.count2 = count2;
+                    ri.ins = "";
+                    relax_ds.push_back(ri);
+		    }
+		break;
+		} 
             if (enabled[i - 1].at(sb2 - 1) != '[')
             {
                 race_point = i;
@@ -1713,7 +2040,6 @@ int main(int argc, char * argv[])
                     cout << "PIN: single" << tid1 << relax_tid2 << relax_count2 << count1 << endl;
                     only = true;
                 }
-                cout << "PIN: Pushin back" << second  << " " << enabled[race_point - 1] << " " << race << endl;
                 tid2 = relax_tid2;
                 count2 = relax_count2;
                 ri.tid1 = tid1;
@@ -1778,6 +2104,7 @@ int main(int argc, char * argv[])
             endrun.close();
         }
     }
+
     if (race)
     {
         if ((break_point.tid == tid1) && (break_point.count > count1))
@@ -1790,7 +2117,7 @@ int main(int argc, char * argv[])
         if ((break_point.tid == tid1) && (break_point.count > count1))
             break_point.count = count1;
     }
-    cout << "PIN: " << tid1 << " " << count1 << " " << tid2 << " " << count2 << " " << break_point.tid << " " << break_point.count << endl;
+    cout << "PIN: " << tid1 << " " << count1 << " " << tid2 << " " << count2 << " " << break_point.tid << " " << break_point.count <<" " <<second << endl;
     for (int i = 0; i < race_point - 1; i++)
     {
 
@@ -1798,14 +2125,20 @@ int main(int argc, char * argv[])
         {
             cout << "PIN: here " << enabled[i] << endl;
             string t = enabled[i].substr(7, enabled[i].find_first_of('{') - 10);
-            ri.tid1 = std::stoi(t.substr(0, t.find_first_of('_')));
-            ri. count1 = std::stoi(t.substr(t.find_first_of('_') + 1));
             t = enabled[i].substr(enabled[i].find_first_of('#') + 1, enabled[i].find_last_of('#') - enabled[i].find_first_of('#') );
-            ri.tid2 = std::stoi(t.substr(0, t.find_first_of(' ')));
-            ri.count2 = std::stoi(t.substr(t.find_first_of(' ') + 1));
+            ri.tid1 = std::stoi(t.substr(0, t.find_first_of('_')));
+	    t = t.substr(t.find_first_of('_') + 1); 
+            ri.count1 = std::stoi(t.substr(0, t.find_first_of('_')));
+	    t = t.substr(t.find_first_of('_') + 1);
+            ri.tid2 = std::stoi(t.substr(0, t.find_first_of('_')));
+	    t = t.substr(t.find_first_of('_') + 1);
+            ri.count2 = std::stoi(t);
             relax_ds.push_back(ri);
+	    cout << "relax ds push back " << ri.tid1 << ri.count1 <<ri.tid2<< ri.count2 << endl;
         }
     }
+    stack_size = stack.size();
+    enabled_size = enabled.size();
     cout << "PIN:  start " << race_point << endl;
     stack.pop_front();
     if (stack.size() > 2) {
@@ -1813,8 +2146,11 @@ int main(int argc, char * argv[])
         stack.pop_front();
         next_state = stack.front();
     }
+    //cout << "PIN: Pushin back " << second << enabled[race_point - 1] << " " << race << endl;
 
     //load_read_write_sets();
+    state_2 = second.substr(0, second.find_last_of('_'));
+    state_1 = std::to_string(tid1) + "_" + std::to_string(count1);
     // sharedAccesses.open("sharedAccesses.out");
     races.open("races.out");
     allLocks.reserve(20);
@@ -1825,6 +2161,10 @@ int main(int argc, char * argv[])
         return Usage();
     }
 
+        /*for (std::deque<relax_info>::iterator rt = relax_ds_temp.begin(); rt != relax_ds_temp.end(); ++rt)
+            {
+	     relax_ds.push_back(*rt);
+            }*/
     // pinplay_engine.Activate(argc, argv,
     // KnobPinPlayLogger, KnobPinPlayReplayer);
     start_s = clock();
