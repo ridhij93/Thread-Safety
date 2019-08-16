@@ -1,0 +1,48 @@
+\documentclass[12pt]{extarticle}
+\usepackage{graphicx}
+\usepackage[T1]{fontenc}
+\usepackage{float}
+\usepackage{rotating}
+\usepackage{epsfig}
+\usepackage{url}
+\usepackage{titling}
+\usepackage[margin=1.00in]{geometry}
+\bibliographystyle{unsrt}
+\parindent 0pt 
+\def\textspacefactor{1.5}
+\setlength{\droptitle}{-5em}
+\begin{tiny}\begin{tiny}\end{tiny}\end{tiny}
+
+\usepackage[utf8]{inputenc}
+
+\title{\large \textbf{Related Work}}
+
+\date{June 2016}
+
+\begin{document}
+
+\maketitle
+Burckhardt et al. developed Line-Up\cite{burckhardt2010line}, an automatic checker for deterministic linearizability. The tool claims to be complete, as reported violation proves the implementation non-linearizable with respect to any deterministic sequential specification. It works in two phases. In the first phase it records invocation sequences of each thread, While in the second phase it checks whether the concurrent executions are consistent with the specifications recorded in phase 1. 
+
+\paragraph{}
+Intel Thread Checker\cite{Banerjee06unravelingdata} is a dynamic analysis tool that detects thread related defects in a multithreaded application. It instruments the source code and then executes it to detect the runtime behaviour of each thread in the program. It instruments memory and synchronization instructions. Memory instructions instrumentation records the memory address and type of access, whereas, synchronization instructions instrumentation is used to establish a happens before relation. This happens before relation is used to build a vector clock that detect data races.
+
+
+\paragraph{}
+In a multithreaded environment, an atomicity violation can lead to a data race. AtomTracker\cite{muzahid2010atomtracker} is a comprehensive approach that can automatically infer the atomic regions and detect their violation at runtime.  It has two parts. AtomTracker-I, infers the atomic regions by analysing the memory traces of the test runs of program. It greedily joins the successive references of a thread into an atomic region if it does not conflict with other threads. AtomTracker-D analyses the set of atomic regions and detects any violation at runtime.   
+
+
+\paragraph{}
+Falcon\cite{park2010falcon} is a dynamic fault localization technique that can detect faulty access pattern of the shared variables in multithreaded program. It first analyses memory access patterns of the shared variables among the threads online, records unserializable and conflicting interleaving patterns, and associates it with a pass/fail results. second  it applies some statistical technique to calculate the suspiciousness value for these detected patterns and rank these patterns according to their suspiciousness values. It detects both order and atomicity violations.
+
+\paragraph{}
+Data races are one of most common bugs in concurrent program. Lockset based approach and happens before(HB) are some standard techniques that are being used for data race detection for past two decades. Lockset based approaches may falsely alarm some data races whereas, happens before relation can miss some data races. Considering the limitations of these techniques, Smaragdakis et al. proposed a new relation, Causally precedes(CP)\cite{smaragdakis2012sound} that generalises happens-before to observe more data races and still remain sound. CP relaxes some HB edges to detect data races that HB can miss. A CP release-acquire edge between \textit{(a) critical sections over the same lock that contain conflicting events, (b) critical sections over the same lock that contain CP ordered events.} Unlike happens-before, CP is not a reflexive relation and so some edges are relaxed. 
+
+
+{\footnotesize
+\bibliography{bibliography}}
+
+%\bibliographystyle{plain}
+%\bibliography{bibliography}
+
+\end{document}
